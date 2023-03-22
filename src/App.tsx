@@ -1,140 +1,198 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CreateChatCompletionResponse,
   CreateChatCompletionRequest,
   ChatCompletionRequestMessage
 } from "openai";
+import { ChakraProvider, extendTheme, Flex, Box, Text, Button, Textarea } from '@chakra-ui/react';
+import { fetchGPTCompressionStearm, loadOrInputAPIKey } from './openai_helpers';
+import { fromMarkdown } from "mdast-util-from-markdown";
+import type { Code } from 'micromark-util-types';
 
-const OPENAI_APIKEY_STORAGED_KEY = 'OPENAI_APIKEY';
-const storagedApiKey = localStorage.getItem(OPENAI_APIKEY_STORAGED_KEY);
-
-type CreateCompletionResponseStream = Omit<CreateChatCompletionResponse, 'choices'> & {
-  'choices': Array<{
-    delta: {
-      content?: string,
-    },
-    finish_reason?: string,
-    index: number
-  }>;
-}
-
-function loadOrInputAPIKey(): string | undefined {
-  let storagedApiKey = localStorage.getItem(OPENAI_APIKEY_STORAGED_KEY);
-  if (storagedApiKey == null) {
-    const input = prompt('Please input your OpenAI API key');
-    if (input == null) {
-      return;
-    }
-    localStorage.setItem(OPENAI_APIKEY_STORAGED_KEY, input);
-    storagedApiKey = input;
+const theme = extendTheme({
+  config: {
+    initialColorMode: 'dark',
+    useSystemColorMode: false,
   }
-  return
-}
+});
 
-function resetApiKey() {
-  localStorage.removeItem(OPENAI_APIKEY_STORAGED_KEY);
-}
+const storagedApiKey = loadOrInputAPIKey();
 
-// localStorage.setItem('OPENAI_APIKEY', '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')
+const initialPrompt = `次の入力に対して奇抜でサイケデリックな CSS を生成してください。
+コードの出力は必ず markdown 記法の \`\`\` のコードブロックで囲ってください。
+\`[[\` と \`]]\`  で囲まれた部分は、後ほどユーザーの入力に置き換えられるので、そのまま出力してください。
 
-const messages: ChatCompletionRequestMessage[] = [
-  {
-    "role": "system",
-    "content": "あなたはプログラマの補助ツールです。"
-  },
-  {
-    "role": "user",
-    "content": `次の React JSX に対する CSS を書いてください。
+入力:
 \`\`\`html
-<div className="container">
-  <h1>タイトル</h1>
-  <p>本文</p>
+<div class="container">
+  <h1 class="title">[[title]]</h1>
+  <p class="body">[[body]]</p>
 </div>
 \`\`\`
-`
-  }
+`;
+
+const defaultMessages: ChatCompletionRequestMessage[] = [
+  {
+    "role": "system",
+    "content": "あなたはプログラマのマークアップ補助ツールです。"
+  },
 ];
 
-function App() {
-  // const [count, setCount] = useState(0);
+
+export default function App() {
+  return <ChakraProvider theme={theme}>
+    <App_ />
+  </ChakraProvider>
+}
+
+export function App_() {
+  const [running, setRunning] = useState<{ controller: AbortController } | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  // const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [editingPrompt, setEditingPromt] = useState(initialPrompt);
+  const [runningPrompt, setRunningPrompt] = useState<null | string>(null);
   const [output, setOutput] = useState('');
+  const [parsedCodeBlocks, setParsedCodeBlocks] = useState<Code[]>([]);
+
+  const onClickCancel = useCallback(async () => {
+    if (running == null) return;
+    running.controller.abort();
+    setRunning(null);
+  }, [running]);
+
   const onClickRun = useCallback(async () => {
+    setRunningPrompt(editingPrompt);
+  }, [editingPrompt, setOutput, iframeRef]);
+
+  useEffect(() => {
+    if (runningPrompt == null) return;
     setOutput('');
-    const completion = await fetch('https://api.openai.com/v1/chat/completions', {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${storagedApiKey}`
-      },
-      method: 'POST',
-      body: JSON.stringify({
-        messages,
-        model: 'gpt-3.5-turbo',
-        stream: true // ここで stream を有効にする
-      } satisfies CreateChatCompletionRequest)
-    });
-    // const ret = await completion.json();
-    // ReadableStream として使用する
-    const reader = completion.body?.getReader();
-    if (completion.status !== 200 || !reader) {
-      return "error";
-    }
-    const decoder = new TextDecoder('utf-8');
-    try {
-      // この read で再起的にメッセージを待機して取得します
-      const read = async (): Promise<any> => {
-        const { done, value } = await reader.read();
-        if (done) return reader.releaseLock();
+    setParsedCodeBlocks([]);
+    const controller = new AbortController();
+    setRunning({ controller });
 
-        const chunk = decoder.decode(value, { stream: true });
-        // この chunk には以下のようなデータ格納されている。複数格納されることもある。
-        // data: { ... }
-        // これは Event stream format と呼ばれる形式
-        // https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#event_stream_format
-        // console.log('chunk', chunk);
+    (async () => {
+      if (iframeRef.current == null) return;
+      let output = '';
+      try {
+        const iter = fetchGPTCompressionStearm(storagedApiKey!, [
+          ...defaultMessages,
+          {
+            "role": "user",
+            "content": editingPrompt
+          }
+        ], controller.signal);
+        for await (const cmpl of iter) {
+          if (cmpl.choices[0].delta.content == null) continue;
+          output += cmpl.choices[0].delta.content;
+          setOutput(output);
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        // controller.
+        setRunning(null);
+      }
 
-        const completions = chunk
-          // 複数格納されていることもあるため split する
-          .split('data:')
-          // data を json parse する
-          // [DONE] は最後の行にくる
-          .map((data) => {
-            const trimData = data.trim();
-            if (trimData === '') return undefined;
-            if (trimData === '[DONE]') return undefined;
-            return JSON.parse(data.trim());
-          })
-          .filter((data) => data) as CreateCompletionResponseStream[];
+      // start parsing as markdown
+      const parsed = fromMarkdown(output);
 
-        // console.log(completions);
-        const appending = completions
-          .filter((v) => v.choices[0].delta.content)
-          .map((v) => v.choices[0].delta.content)
-          .join('');
-        setOutput((prev) => prev + appending);
-        return read();
-      };
-      await read();
-    } catch (e) {
-      console.error(e);
-    }
-    // ReadableStream を最後は解放する
-    reader.releaseLock();
-    // console.log(ret);
-  }, [setOutput]);
+      const inputParsed = fromMarkdown(runningPrompt);
+      const inputHtml = inputParsed.children.find((v) => v.type === 'code' && v.lang === 'html') as any;
+      if (inputHtml == null) throw new Error("input html not found");
+
+      const codeBlocks = parsed.children.filter((v) => v.type === 'code');
+      setParsedCodeBlocks(codeBlocks as unknown as Code[]);
+
+      // generate preview html
+      try {
+        const blob = new Blob(
+          [
+            `<!DOCTYPE html>
+      <html>
+        <head>
+            <style>
+              html, body {
+                margin: 0;
+              }
+            </style>
+          ${codeBlocks.map((v) => {
+              // @ts-ignore
+              if (v.lang === 'css') {
+                // @ts-ignore
+                return `<style>${v.value}</style>`;
+              }
+            }).filter(v => v).join('')}
+        </head>
+        <body>
+
+        ${inputHtml.value ?? ''}
+
+        </body>
+      </html>`,
+          ],
+          { type: "text/html" }
+        );
+        iframeRef.current.src = URL.createObjectURL(blob);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setRunning(null);
+      }
+    })();
+  }, [runningPrompt, setRunning, setOutput, iframeRef.current]);
 
   return (
-    <div className="App">
-      Hello
-      <button onClick={onClickRun}>
-        Run
-      </button>
-      <pre>
-        <code>
-          {output}
-        </code>
-      </pre>
-    </div>
+    <Flex width='100vw' height='100vh' >
+      <Box style={{ width: '50vw', height: '100%' }}>
+        <Box height='60px'>
+          <Button onClick={onClickRun} size="sm">
+            Run
+          </Button>
+          <Button onClick={onClickCancel} size="sm" disabled={!!running}>
+            Cancel
+          </Button>
+
+        </Box>
+        <Box height="calc(96% - 60px)">
+          <Textarea
+            defaultValue={editingPrompt}
+            onChange={(e) => {
+              console.log("changed", e.target.value.length);
+              setEditingPromt(e.target.value)
+            }}
+            height="100%"
+          />
+        </Box>
+      </Box>
+      <Box height='100%' maxW="50vw">
+        <iframe style={{ width: '48vw', padding: 0, margin: 0, height: '30vh' }} ref={iframeRef} />
+        <hr />
+        <h3>Result</h3>
+        <pre>
+          <code>
+            {output}
+          </code>
+        </pre>
+        <hr />
+        <details>
+          <summary>
+            Parsed
+          </summary>
+          <pre>
+            <code>
+              {
+                parsedCodeBlocks.map((v, i) => {
+                  // @ts-ignore
+                  return `// ${v.lang}\n${v.value}\n\n`
+                })
+              }
+            </code>
+          </pre>
+
+        </details>
+      </Box>
+    </Flex>
   )
 }
 
-export default App
