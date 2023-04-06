@@ -4,8 +4,7 @@ import type {
   ChatCompletionRequestMessage,
 } from "openai";
 
-const OPENAI_APIKEY_STORAGED_KEY = "OPENAI_APIKEY";
-// const storagedApiKey = localStorage.getItem(OPENAI_APIKEY_STORAGED_KEY);
+const OPENAI_APIKEY_STORAGED_KEY = "OPENAI_API_KEY";
 
 export type CreateCompletionResponseStream = Omit<
   CreateChatCompletionResponse,
@@ -19,19 +18,6 @@ export type CreateCompletionResponseStream = Omit<
     index: number;
   }>;
 };
-
-export function loadOrInputAPIKey(): string | undefined {
-  let storagedApiKey = localStorage.getItem(OPENAI_APIKEY_STORAGED_KEY);
-  if (storagedApiKey == null) {
-    const input = prompt("Please input your OpenAI API key");
-    if (input == null) {
-      return;
-    }
-    localStorage.setItem(OPENAI_APIKEY_STORAGED_KEY, input);
-    storagedApiKey = input;
-  }
-  return storagedApiKey;
-}
 
 export async function* fetchGPTCompressionStearm(
   apiKey: string,
@@ -82,4 +68,17 @@ async function* streamAsyncIterable(stream: ReadableStream) {
   } finally {
     reader.releaseLock();
   }
+}
+
+export function getOrInputAPIKey(): string | undefined {
+  let storagedApiKey = localStorage.getItem(OPENAI_APIKEY_STORAGED_KEY);
+  if (storagedApiKey == null) {
+    const input = prompt("Please input your OpenAI API key");
+    if (input == null) {
+      return;
+    }
+    localStorage.setItem(OPENAI_APIKEY_STORAGED_KEY, input);
+    storagedApiKey = input;
+  }
+  return storagedApiKey;
 }

@@ -1,32 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
-  CreateChatCompletionResponse,
-  CreateChatCompletionRequest,
   ChatCompletionRequestMessage
 } from "openai";
-import { ChakraProvider, extendTheme, Flex, Box, Text, Button, Textarea } from '@chakra-ui/react';
-import { fetchGPTCompressionStearm, loadOrInputAPIKey } from './openai_helpers';
+import { Heading, Box, Button, Textarea, Grid, GridItem, Flex, Spacer, IconButton } from '@chakra-ui/react';
+import { fetchGPTCompressionStearm, getOrInputAPIKey } from './openai_helpers';
 import { fromMarkdown } from "mdast-util-from-markdown";
-import type { Code } from 'micromark-util-types';
-
-const theme = extendTheme({
-  config: {
-    initialColorMode: 'dark',
-    useSystemColorMode: false,
-  }
-});
-
-const storagedApiKey = loadOrInputAPIKey();
 
 const initialPrompt = `次の入力に対して奇抜でサイケデリックな CSS を生成してください。
 コードの出力は必ず markdown 記法の \`\`\` のコードブロックで囲ってください。
-\`[[\` と \`]]\`  で囲まれた部分は、後ほどユーザーの入力に置き換えられるので、そのまま出力してください。
 
 入力:
 \`\`\`html
 <div class="container">
-  <h1 class="title">[[title]]</h1>
-  <p class="body">[[body]]</p>
+  <p class="text">Hello</p>
 </div>
 \`\`\`
 `;
@@ -40,19 +26,15 @@ const defaultMessages: ChatCompletionRequestMessage[] = [
 
 
 export default function App() {
-  return <ChakraProvider theme={theme}>
-    <App_ />
-  </ChakraProvider>
-}
-
-export function App_() {
   const [running, setRunning] = useState<{ controller: AbortController } | null>(null);
+  const [clickCount, setClickCount] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
+
   // const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [editingPrompt, setEditingPromt] = useState(initialPrompt);
   const [runningPrompt, setRunningPrompt] = useState<null | string>(null);
   const [output, setOutput] = useState('');
-  const [parsedCodeBlocks, setParsedCodeBlocks] = useState<Code[]>([]);
 
   const onClickCancel = useCallback(async () => {
     if (running == null) return;
@@ -61,20 +43,32 @@ export function App_() {
   }, [running]);
 
   const onClickRun = useCallback(async () => {
+    if (running?.controller) {
+      running.controller.abort();
+      setRunning(null);
+      console.error('aborted');
+    }
     setRunningPrompt(editingPrompt);
-  }, [editingPrompt, setOutput, iframeRef]);
+    setClickCount(n => n + 1);
+  }, [editingPrompt, running, setOutput, iframeRef, setRunningPrompt]);
 
   useEffect(() => {
-    if (runningPrompt == null) return;
-    setOutput('');
-    setParsedCodeBlocks([]);
+    if (runningPrompt == null) {
+      console.log("cancelled");
+      return;
+    }
     const controller = new AbortController();
+
+    setOutput('');
+    // setParsedCodeBlocks([]);
     setRunning({ controller });
 
     (async () => {
       if (iframeRef.current == null) return;
       let output = '';
       try {
+        const storagedApiKey = getOrInputAPIKey();
+
         const iter = fetchGPTCompressionStearm(storagedApiKey!, [
           ...defaultMessages,
           {
@@ -102,8 +96,6 @@ export function App_() {
       if (inputHtml == null) throw new Error("input html not found");
 
       const codeBlocks = parsed.children.filter((v) => v.type === 'code');
-      setParsedCodeBlocks(codeBlocks as unknown as Code[]);
-
       // generate preview html
       try {
         const blob = new Blob(
@@ -111,11 +103,14 @@ export function App_() {
             `<!DOCTYPE html>
       <html>
         <head>
-            <style>
-              html, body {
-                margin: 0;
-              }
-            </style>
+          <style>
+            html, body {
+              margin: 0;
+            }
+            body {
+              transform: scale(1);
+            }
+          </style>
           ${codeBlocks.map((v) => {
               // @ts-ignore
               if (v.lang === 'css') {
@@ -125,9 +120,7 @@ export function App_() {
             }).filter(v => v).join('')}
         </head>
         <body>
-
         ${inputHtml.value ?? ''}
-
         </body>
       </html>`,
           ],
@@ -140,59 +133,90 @@ export function App_() {
         setRunning(null);
       }
     })();
-  }, [runningPrompt, setRunning, setOutput, iframeRef.current]);
+  }, [runningPrompt, clickCount, setRunning, setOutput, iframeRef.current]);
+
+  useEffect(() => {
+    if (outputRef.current == null) return;
+    outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [output, outputRef])
 
   return (
-    <Flex width='100vw' height='100vh' >
-      <Box style={{ width: '50vw', height: '100%' }}>
-        <Box height='60px'>
-          <Button onClick={onClickRun} size="sm">
-            Run
-          </Button>
-          <Button onClick={onClickCancel} size="sm" disabled={!!running}>
-            Cancel
-          </Button>
+    <Box w="100vw" h="100vh">
+      <Grid
+        templateAreas={`
+        "header header"
+        "prompt controller"
+        "prompt output"
+        "prompt preview"`
+        }
+        gridTemplateRows={`
+          50px
+          40px
+          1fr
+          2fr
+        `}
+        gridTemplateColumns={'1fr 1fr'}
+        h='100%'
+        gap='1'
+        color='blackAlpha.700'
+        fontWeight='bold'
+      >
+        <GridItem pl='2' bg='orange.300' area={'header'}>
+          <Flex>
+            <Box>
+              <Heading>
+                GPT Markup Preview (DEMO)
+              </Heading>
+            </Box>
+          </Flex>
 
-        </Box>
-        <Box height="calc(96% - 60px)">
-          <Textarea
-            defaultValue={editingPrompt}
-            onChange={(e) => {
-              console.log("changed", e.target.value.length);
-              setEditingPromt(e.target.value)
-            }}
-            height="100%"
-          />
-        </Box>
-      </Box>
-      <Box height='100%' maxW="50vw">
-        <iframe style={{ width: '48vw', padding: 0, margin: 0, height: '30vh' }} ref={iframeRef} />
-        <hr />
-        <h3>Result</h3>
-        <pre>
-          <code>
-            {output}
-          </code>
-        </pre>
-        <hr />
-        <details>
-          <summary>
-            Parsed
-          </summary>
-          <pre>
-            <code>
-              {
-                parsedCodeBlocks.map((v, i) => {
-                  // @ts-ignore
-                  return `// ${v.lang}\n${v.value}\n\n`
-                })
-              }
-            </code>
-          </pre>
+        </GridItem>
+        <GridItem pl='1' area={'prompt'}>
+          <Box height="99%" background="#333" color="white">
+            <Textarea
+              defaultValue={editingPrompt}
+              onChange={(e) => {
+                console.log("changed", e.target.value.length);
+                setEditingPromt(e.target.value)
+              }}
+              height="100%"
+            />
+          </Box>
 
-        </details>
-      </Box>
-    </Flex>
+        </GridItem>
+        <GridItem pl='2' bg='green.300' area={'output'} minW={0} minH={0}>
+          <Box height="100%" width="100%" overflow="scroll" fontFamily={"SFMono-Regular, Consolas, Liberation Mono, Menlo, Courier, monospace;"} ref={outputRef}>
+            <pre>
+              <code>
+                {output}
+              </code>
+            </pre>
+          </Box>
+        </GridItem>
+        <GridItem pl='2' area={'controller'}>
+          <Button
+            onClick={onClickRun}
+            size="sm"
+            variant={"solid"}
+            colorScheme='teal'
+            isLoading={!!running}
+            loadingText='Generating...'
+          >
+            Run Prompt
+          </Button>
+          &nbsp;
+          {running &&
+            <Button onClick={onClickCancel} size="sm" variant={"solid"} colorScheme='orange'>
+              Cancel
+            </Button>
+          }
+        </GridItem>
+        <GridItem pl='0' bg='blue.300' area={'preview'} minW="0" minH="0">
+          <iframe style={{ width: '100%', height: '100%', padding: 0, margin: 0 }} ref={iframeRef} />
+        </GridItem>
+      </Grid>
+    </Box>
   )
+
 }
 
